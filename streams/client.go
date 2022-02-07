@@ -2,6 +2,8 @@ package streams
 
 import (
 	"fmt"
+	"time"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -13,7 +15,6 @@ import (
 	"github.com/elastic/beats/libbeat/outputs/codec/json"
 	"github.com/elastic/beats/libbeat/publisher"
 	"github.com/jpillora/backoff"
-	"time"
 )
 
 type client struct {
@@ -23,8 +24,16 @@ type client struct {
 	beatName             string
 	encoder              codec.Codec
 	timeout              time.Duration
+	batchSizeBytes       int
 	observer             outputs.Observer
 	backoff              backoff.Backoff
+}
+
+type batch struct {
+	allEvents []publisher.Event
+	okEvents  []publisher.Event
+	records   []*kinesis.PutRecordsRequestEntry
+	dropped   int
 }
 
 type kinesisStreamsClient interface {
@@ -38,8 +47,9 @@ func newClient(sess *session.Session, config *StreamsConfig, observer outputs.Ob
 		streamName:           config.DeliveryStreamName,
 		partitionKeyProvider: partitionKeyProvider,
 		beatName:             beat.Beat,
-		encoder:              json.New(false, true, beat.Version),
+		encoder:              json.New(beat.Version, json.Config{Pretty: false, EscapeHTML: true}),
 		timeout:              config.Timeout,
+		batchSizeBytes:       config.BatchSizeBytes,
 		observer:             observer,
 		backoff:              config.Backoff,
 	}
@@ -84,11 +94,23 @@ func (client *client) Publish(batch publisher.Batch) error {
 }
 
 func (client *client) publishEvents(events []publisher.Event) ([]publisher.Event, error) {
-	observer := client.observer
-	observer.NewBatch(len(events))
+	batches := client.mapEvents(events)
+	totalFailed := []publisher.Event{}
+	for _, batch := range batches {
+		failed, err := client.publishBatch(batch)
+		if err != nil || len(failed) > 0 {
+			totalFailed = append(totalFailed, failed...)
+		}
+	}
+	logp.Debug("kinesis", "received batches: %d for events %d", len(batches), len(events))
+	return totalFailed, nil
+}
 
-	logp.Debug("kinesis", "received events: %v", events)
-	okEvents, records, dropped := client.mapEvents(events)
+func (client *client) publishBatch(b batch) ([]publisher.Event, error) {
+	observer := client.observer
+
+	okEvents, records, dropped, events := b.okEvents, b.records, b.dropped, b.allEvents
+	observer.NewBatch(len(b.allEvents))
 	if dropped > 0 {
 		logp.Debug("kinesis", "sent %d records: %v", len(records), records)
 		observer.Dropped(dropped)
@@ -100,6 +122,8 @@ func (client *client) publishEvents(events []publisher.Event) ([]publisher.Event
 	}
 	logp.Debug("kinesis", "mapped to records: %v", records)
 	res, err := client.putKinesisRecords(records)
+	// TODO: verify if I need to pass the events. Shouldn't I be able to get the events from the batch?
+	// maybe just use okEvents?
 	failed := collectFailedEvents(res, events)
 	if len(failed) == 0 {
 		if aerr, ok := err.(awserr.Error); ok {
@@ -107,16 +131,16 @@ func (client *client) publishEvents(events []publisher.Event) ([]publisher.Event
 			case kinesis.ErrCodeLimitExceededException:
 			case kinesis.ErrCodeProvisionedThroughputExceededException:
 			case kinesis.ErrCodeInternalFailureException:
-				logp.Info("putKinesisRecords failed (api level, not per-record failure). Will retry all records.", err)
+				logp.Info("putKinesisRecords failed (api level, not per-record failure). Will retry all records. error: %v", err)
 				failed = events
 			default:
-				logp.Warn("putKinesisRecords persistent failure. Will not retry", err)
+				logp.Warn("putKinesisRecords persistent failure. Will not retry. error: %v", err)
 			}
 		}
 	}
 	if err != nil || len(failed) > 0 {
 		dur := client.backoff.Duration()
-		logp.Info("retrying %d events on error: %v", len(failed), err, dur)
+		logp.Info("retrying %d events client.backoff.Duration %s on error: %v", len(failed), dur, err)
 		time.Sleep(dur)
 	} else {
 		client.backoff.Reset()
@@ -124,31 +148,54 @@ func (client *client) publishEvents(events []publisher.Event) ([]publisher.Event
 	return failed, err
 }
 
-func (client *client) mapEvents(events []publisher.Event) ([]publisher.Event, []*kinesis.PutRecordsRequestEntry, int) {
+func (client *client) mapEvents(events []publisher.Event) []batch {
+	batches := []batch{}
 	dropped := 0
-	records := make([]*kinesis.PutRecordsRequestEntry, 0, len(events))
-	okEvents := make([]publisher.Event, 0, len(events))
+	records := []*kinesis.PutRecordsRequestEntry{}
+	okEvents := []publisher.Event{}
+	allEvents := []publisher.Event{}
+
+	batchSize := 0
+
 	for i := range events {
 		event := events[i]
-		record, err := client.mapEvent(&event)
+		size, record, err := client.mapEvent(&event)
+		if size >= client.batchSizeBytes {
+			logp.Critical("kinesis single record of size %d is bigger than batchSizeBytes %d, sending batch without it! no backoff!", size, client.batchSizeBytes)
+			continue
+		}
+		allEvents = append(allEvents, event)
 		if err != nil {
 			logp.Debug("kinesis", "failed to map event(%v): %v", event, err)
 			dropped++
+		} else if batchSize+size >= client.batchSizeBytes {
+			batches = append(batches, batch{
+				okEvents:  okEvents,
+				records:   records,
+				dropped:   dropped,
+				allEvents: allEvents[:len(allEvents)-1]})
+			dropped = 0
+			allEvents = []publisher.Event{event}
+			batchSize = size
+			records = []*kinesis.PutRecordsRequestEntry{record}
+			okEvents = []publisher.Event{event}
 		} else {
+			batchSize += size
 			okEvents = append(okEvents, event)
 			records = append(records, record)
 		}
 	}
-	return okEvents, records, dropped
+	batches = append(batches, batch{okEvents: okEvents, records: records, dropped: dropped, allEvents: allEvents})
+	return batches
 }
 
-func (client *client) mapEvent(event *publisher.Event) (*kinesis.PutRecordsRequestEntry, error) {
+func (client *client) mapEvent(event *publisher.Event) (int, *kinesis.PutRecordsRequestEntry, error) {
 	var buf []byte
 	{
 		serializedEvent, err := client.encoder.Encode(client.beatName, &event.Content)
 		if err != nil {
 			logp.Critical("Unable to encode event: %v", err)
-			return nil, err
+			return 0, nil, err
 		}
 		// See https://github.com/elastic/beats/blob/5a6630a8bc9b9caf312978f57d1d9193bdab1ac7/libbeat/outputs/kafka/client.go#L163-L164
 		// You need to copy the byte data like this. Otherwise you see strange issues like all the records sent in a same batch has the same Data.
@@ -165,11 +212,12 @@ func (client *client) mapEvent(event *publisher.Event) (*kinesis.PutRecordsReque
 
 	partitionKey, err := client.partitionKeyProvider.PartitionKeyFor(event)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get parititon key: %v", err)
+		return 0, nil, fmt.Errorf("failed to get parititon key: %v", err)
 	}
 
-	return &kinesis.PutRecordsRequestEntry{Data: buf, PartitionKey: aws.String(partitionKey)}, nil
+	return len(buf), &kinesis.PutRecordsRequestEntry{Data: buf, PartitionKey: aws.String(partitionKey)}, nil
 }
+
 func (client *client) putKinesisRecords(records []*kinesis.PutRecordsRequestEntry) (*kinesis.PutRecordsOutput, error) {
 	request := kinesis.PutRecordsInput{
 		StreamName: &client.streamName,
@@ -198,6 +246,9 @@ func collectFailedEvents(res *kinesis.PutRecordsOutput, events []publisher.Event
 			}
 			if *r.ErrorCode == "ProvisionedThroughputExceededException" {
 				logp.NewLogger("streams").Debug("throughput exceeded. will retry", r)
+				failedEvents = append(failedEvents, events[i])
+			}
+			if *r.ErrorCode != "" {
 				failedEvents = append(failedEvents, events[i])
 			}
 		}
