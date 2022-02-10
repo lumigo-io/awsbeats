@@ -17,6 +17,8 @@ import (
 	"github.com/jpillora/backoff"
 )
 
+var MAX_RECORD_SIZE = 1024*1024 - 300
+
 type client struct {
 	streams              kinesisStreamsClient
 	streamName           string
@@ -160,7 +162,7 @@ func (client *client) mapEvents(events []publisher.Event) []batch {
 	for i := range events {
 		event := events[i]
 		size, record, err := client.mapEvent(&event)
-		if size >= client.batchSizeBytes {
+		if size >= client.batchSizeBytes || size >= MAX_RECORD_SIZE {
 			logp.Critical("kinesis single record of size %d is bigger than batchSizeBytes %d, sending batch without it! no backoff!", size, client.batchSizeBytes)
 			continue
 		}
