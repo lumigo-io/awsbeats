@@ -102,6 +102,7 @@ func TestMapEventsEventBiggetThanMaxSizeOfRecord(t *testing.T) {
 
 	codecData := [][]byte{[]byte("boom"), []byte("boo")}
 	codecErr := []error{nil, nil}
+	origMaxSizeOfRecord := MAX_RECORD_SIZE
 	MAX_RECORD_SIZE = 5
 	client := client{
 		encoder:              &StubCodec{dat: codecData, err: codecErr},
@@ -130,7 +131,7 @@ func TestMapEventsEventBiggetThanMaxSizeOfRecord(t *testing.T) {
 	if string(records[0].Data) != "boo\n" {
 		t.Errorf("Unexpected data %s", records[0].Data)
 	}
-
+	MAX_RECORD_SIZE = origMaxSizeOfRecord
 }
 
 func TestMapEventsEventBiggetThanMaxSize(t *testing.T) {
