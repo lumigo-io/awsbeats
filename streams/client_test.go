@@ -114,7 +114,7 @@ func TestMapEventsEventBiggetThanMaxSizeOfRecord(t *testing.T) {
 		{Content: beat.Event{Fields: common.MapStr{fieldForPartitionKey: expectedPartitionKey}}},
 	}
 	batches := client.mapEvents(events)
-	okEvents, records, dropped, events := batches[0].okEvents, batches[0].records, batches[0].dropped, batches[0].allEvents
+	okEvents, records, dropped := batches[0].okEvents, batches[0].records, batches[0].dropped
 
 	if dropped != 0 {
 		t.Errorf("Expected 0 dropped, got: %d", dropped)
@@ -122,16 +122,13 @@ func TestMapEventsEventBiggetThanMaxSizeOfRecord(t *testing.T) {
 	if len(records) != 1 {
 		t.Errorf("Expected 1 records, got %v", len(records))
 	}
-	if len(events) != 1 {
-		t.Errorf("Expected 1 events, got %v", len(events))
-	}
 	if len(okEvents) != 1 {
 		t.Errorf("Expected 1 ok events, got %v", len(okEvents))
 	}
 	if string(records[0].Data) != "boo\n" {
 		t.Errorf("Unexpected data %s", records[0].Data)
 	}
-	MAX_RECORD_SIZE = origMaxSizeOfRecord
+	MAX_RECORD_SIZE = origMaxSizeOfRecord // cleanup
 }
 
 func TestMapEventsEventBiggetThanMaxSize(t *testing.T) {
@@ -151,16 +148,13 @@ func TestMapEventsEventBiggetThanMaxSize(t *testing.T) {
 		{Content: beat.Event{Fields: common.MapStr{fieldForPartitionKey: expectedPartitionKey}}},
 	}
 	batches := client.mapEvents(events)
-	okEvents, records, dropped, events := batches[0].okEvents, batches[0].records, batches[0].dropped, batches[0].allEvents
+	okEvents, records, dropped := batches[0].okEvents, batches[0].records, batches[0].dropped
 
 	if dropped != 0 {
 		t.Errorf("Expected 0 dropped, got: %d", dropped)
 	}
 	if len(records) != 1 {
 		t.Errorf("Expected 1 records, got %v", len(records))
-	}
-	if len(events) != 1 {
-		t.Errorf("Expected 1 events, got %v", len(events))
 	}
 	if len(okEvents) != 1 {
 		t.Errorf("Expected 1 ok events, got %v", len(okEvents))
@@ -441,6 +435,120 @@ func TestTestPublishEventsBatch(t *testing.T) {
 	if len(kinesisStub.calls[1].Records) != 3 {
 		t.Errorf("unexpected number of events in batch 1 batches: %d", len(kinesisStub.calls[1].Records))
 	}
+}
+
+func TestTestPublishEventsBatchGZIP(t *testing.T) {
+	events := []publisher.Event{}
+	fieldForPartitionKey := "mypartitionkey"
+	provider := newFieldPartitionKeyProvider(fieldForPartitionKey)
+	client := client{
+		partitionKeyProvider: provider,
+		observer:             outputs.NewNilObserver(),
+		batchSizeBytes:       1500,
+		gzip:                 true,
+	}
+	origMaxSizeOfRecord := MAX_RECORD_SIZE
+	MAX_RECORD_SIZE = 500
+	codecData := [][]byte{
+		[]byte(strings.Repeat("a", 100)),
+		[]byte(strings.Repeat("b", 150)),
+		[]byte(strings.Repeat("c", 600)),
+		[]byte(strings.Repeat("d", 100)),
+		[]byte(strings.Repeat("e", 100)),
+		[]byte(strings.Repeat("f", 100)),
+		[]byte(strings.Repeat("g", 300)),
+		[]byte(strings.Repeat("h", 200)),
+		[]byte(strings.Repeat("i", 100)),
+		[]byte(strings.Repeat("j", 100)),
+		[]byte(strings.Repeat("k", 200)),
+		[]byte(strings.Repeat("l", 100)),
+		[]byte(strings.Repeat("m", 200)),
+		[]byte(strings.Repeat("n", 160)),
+		[]byte(strings.Repeat("o", 220)),
+		[]byte(strings.Repeat("p", 400)),
+		[]byte(strings.Repeat("q", 100)),
+		[]byte(strings.Repeat("r", 200)),
+		[]byte(strings.Repeat("s", 400)),
+		[]byte(strings.Repeat("t", 100)),
+		[]byte(strings.Repeat("u", 200)),
+		[]byte(strings.Repeat("v", 100)),
+		[]byte(strings.Repeat("w", 100)),
+		[]byte(strings.Repeat("x", 200)),
+		[]byte(strings.Repeat("y", 400)),
+		[]byte(strings.Repeat("z", 200)),
+		[]byte(strings.Repeat("a", 200)),
+		[]byte(strings.Repeat("b", 150)),
+		[]byte(strings.Repeat("c", 200)),
+		[]byte(strings.Repeat("d", 100)),
+		[]byte(strings.Repeat("e", 300)),
+		[]byte(strings.Repeat("f", 100)),
+		[]byte(strings.Repeat("g", 300)),
+		[]byte(strings.Repeat("h", 200)),
+		[]byte(strings.Repeat("i", 100)),
+		[]byte(strings.Repeat("j", 100)),
+		[]byte(strings.Repeat("k", 200)),
+		[]byte(strings.Repeat("l", 100)),
+		[]byte(strings.Repeat("m", 200)),
+		[]byte(strings.Repeat("n", 160)),
+		[]byte(strings.Repeat("o", 220)),
+		[]byte(strings.Repeat("p", 400)),
+		[]byte(strings.Repeat("q", 100)),
+		[]byte(strings.Repeat("r", 200)),
+		[]byte(strings.Repeat("s", 400)),
+		[]byte(strings.Repeat("t", 100)),
+		[]byte(strings.Repeat("u", 200)),
+		[]byte(strings.Repeat("v", 100)),
+		[]byte(strings.Repeat("w", 100)),
+		[]byte(strings.Repeat("x", 200)),
+		[]byte(strings.Repeat("y", 400)),
+		[]byte(strings.Repeat("z", 200)),
+	}
+	codecErr := make([]error, len(codecData))
+
+	client.encoder = &StubCodec{dat: codecData, err: codecErr}
+
+	putRecordsOutputGood := &kinesis.PutRecordsOutput{
+		Records:           []*kinesis.PutRecordsResultEntry{{ErrorCode: aws.String("")}},
+		FailedRecordCount: aws.Int64(0),
+	}
+
+	putRecordsOut := []*kinesis.PutRecordsOutput{
+		putRecordsOutputGood,
+		putRecordsOutputGood,
+	}
+	putRecordsErr := make([]error, len(putRecordsOut))
+	kinesisStub := &StubClient{out: putRecordsOut, err: putRecordsErr}
+	client.streams = kinesisStub
+
+	for _, _ = range codecData {
+		events = append(events, publisher.Event{
+			Content: beat.Event{
+				Fields: common.MapStr{
+					fieldForPartitionKey: "expectedPartitionKey",
+				},
+			},
+		},
+		)
+	}
+	rest, err := client.publishEvents(events)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if len(rest) != 0 {
+		t.Errorf("unexpected number of remaining events: %d", len(rest))
+	}
+	if len(kinesisStub.calls) != 2 {
+		t.Errorf("unexpected number of batches: %d", len(kinesisStub.calls))
+	}
+	if len(kinesisStub.calls[0].Records) != 15 {
+		t.Errorf("unexpected number of records in batch 0 got: %d", len(kinesisStub.calls[0].Records))
+	}
+	if len(kinesisStub.calls[1].Records) != 13 {
+		t.Errorf("unexpected number of records in batch 1 got: %d", len(kinesisStub.calls[1].Records))
+	}
+	// var dst []byte
+	// base64.Decode(dst, kinesisStub.calls[0].Records[0].Data)
+	MAX_RECORD_SIZE = origMaxSizeOfRecord // cleanup
 }
 
 func TestClient_String(t *testing.T) {

@@ -18,6 +18,7 @@ type StreamsConfig struct {
 	MaxRetries           int             `config:"max_retries"`
 	Timeout              time.Duration   `config:"timeout"`
 	Backoff              backoff.Backoff `config:"backoff"`
+	GZip                 bool            `config:"gzip"`
 }
 
 const (
@@ -37,6 +38,7 @@ var (
 			Jitter: true,
 		},
 		BatchSizeBytes: maxBatchSizeBytes, // 5MB
+		GZip:           false,
 	}
 )
 
@@ -50,11 +52,11 @@ func (c *StreamsConfig) Validate() error {
 	}
 
 	if c.BatchSize > maxBatchSize || c.BatchSize < 1 {
-		return errors.New(fmt.Sprintf("invalid batch size got:%d", c.BatchSize))
+		return fmt.Errorf("invalid batch size got:%d", c.BatchSize)
 	}
 
 	if c.BatchSizeBytes > maxBatchSizeBytes || c.BatchSizeBytes < 1 {
-		return errors.New(fmt.Sprintf("invalid batch size bytes got:%d", c.BatchSizeBytes))
+		return fmt.Errorf("invalid batch size bytes got:%d", c.BatchSizeBytes)
 	}
 
 	if c.PartitionKeyProvider != "" && c.PartitionKeyProvider != "xid" {
