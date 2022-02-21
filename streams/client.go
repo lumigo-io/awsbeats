@@ -121,11 +121,11 @@ func (client *client) publishBatch(b batch) ([]publisher.Event, error) {
 	observer := client.observer
 
 	okEvents, records, dropped := b.okEvents, b.records, b.dropped
-	observer.NewBatch(client.lenListOfLists(okEvents))
+	observer.NewBatch(lenListOfLists(okEvents))
 	if dropped > 0 {
 		logp.Debug("kinesis", "sent %d records: %v", len(records), records)
 		observer.Dropped(dropped)
-		observer.Acked(client.lenListOfLists(okEvents))
+		observer.Acked(lenListOfLists(okEvents))
 		if len(records) == 0 {
 			logp.Debug("kinesis", "No records were mapped")
 			return nil, nil
@@ -141,7 +141,7 @@ func (client *client) publishBatch(b batch) ([]publisher.Event, error) {
 			case kinesis.ErrCodeProvisionedThroughputExceededException:
 			case kinesis.ErrCodeInternalFailureException:
 				logp.Info("putKinesisRecords failed (api level, not per-record failure). Will retry all records. error: %v", err)
-				failed = client.eventsFlattenLists(okEvents)
+				failed = eventsFlattenLists(okEvents)
 			default:
 				logp.Warn("putKinesisRecords persistent failure. Will not retry. error: %v", err)
 			}
@@ -156,7 +156,7 @@ func (client *client) publishBatch(b batch) ([]publisher.Event, error) {
 	}
 	return failed, err
 }
-func (client *client) eventsFlattenLists(listOfListsEvents [][]publisher.Event) []publisher.Event {
+func eventsFlattenLists(listOfListsEvents [][]publisher.Event) []publisher.Event {
 	var flatEvents []publisher.Event
 	for _, events := range listOfListsEvents {
 		flatEvents = append(flatEvents, events...)
@@ -164,7 +164,7 @@ func (client *client) eventsFlattenLists(listOfListsEvents [][]publisher.Event) 
 	return flatEvents
 }
 
-func (client *client) lenListOfLists(listOfListsEvents [][]publisher.Event) int {
+func lenListOfLists(listOfListsEvents [][]publisher.Event) int {
 	var lenList int
 	for _, events := range listOfListsEvents {
 		lenList += len(events)
@@ -188,11 +188,11 @@ func (client *client) mapEvents(events []publisher.Event) []batch {
 			continue
 		}
 		if err != nil {
-			logp.Debug("kinesis", "failed to map event(%v): %v", event, err)
+			logp.Critical("kinesis failed to map event(%v): %v", event, err)
 			dropped++
 		} else if batchSize+size >= client.batchSizeBytes {
 			batches = append(batches, batch{
-				okEvents: client.eventsToListOfLists(okEvents),
+				okEvents: eventsToListOfLists(okEvents),
 				records:  records,
 				dropped:  dropped})
 			dropped = 0
@@ -206,13 +206,13 @@ func (client *client) mapEvents(events []publisher.Event) []batch {
 		}
 	}
 	batches = append(batches, batch{
-		okEvents: client.eventsToListOfLists(okEvents),
+		okEvents: eventsToListOfLists(okEvents),
 		records:  records,
 		dropped:  dropped})
 	return batches
 }
 
-func (client *client) eventsToListOfLists(events []publisher.Event) [][]publisher.Event {
+func eventsToListOfLists(events []publisher.Event) [][]publisher.Event {
 	var lists [][]publisher.Event
 	for i := range events {
 		lists = append(lists, []publisher.Event{events[i]})
@@ -260,35 +260,24 @@ func (client *client) mapEventsGZip(events []publisher.Event) []batch {
 	batchSize := 0
 
 	for i := range events {
-		var gzippedBytes []byte
+		// var gzippedBytes []byte
 		event := events[i]
 		buf, err := client.getBytesFromEvent(&event)
 		if err != nil {
-			logp.Debug("kinesis", "failed to get bytes from event(%v): %v", event, err)
+			logp.Critical("kinesis failed to get bytes from event(%v): %v", event, err)
 			dropped++
 			continue
 		}
 		size := len(buf)
 		if size >= client.batchSizeBytes || size >= MAX_RECORD_SIZE { // single record is bigger than batchSizeBytes or bigger than kinesis max record size
-			gzippedBytes, err = client.getGZipFormatedBytes([][]byte{buf})
+			gzippedBytes, record, err := client.getRecord([][]byte{buf}, event)
 			if err != nil {
-				logp.Critical("Unable to gzip event: %v", err)
+				logp.Critical("Unable get record: %v", err)
 				dropped++
 				continue
 			}
 			size = len(gzippedBytes)
-			if size >= client.batchSizeBytes || size >= MAX_RECORD_SIZE { // gzipped single record is bigger than batchSizeBytes or bigger than kinesis max record size
-				logp.Critical("kinesis single record of size:%d  was gzipped to size %d is bigger than batchSizeBytes %d or bigger than kinesis max record size %d, sending batch without it! no backoff!",
-					len(buf), size, client.batchSizeBytes, MAX_RECORD_SIZE)
-				dropped++
-				continue
-			}
-			_, record, err := client.mapBytes(gzippedBytes, &event) // TODO: add +1 to size and remove size here and in mapBytes
-			if err != nil {
-				logp.Debug("kinesis", "failed to map event from bytes(%v): %v", event, err)
-				dropped++
-				continue
-			}
+
 			if batchSize+size >= client.batchSizeBytes {
 				batches = append(batches, batch{
 					okEvents: okEvents,
@@ -304,19 +293,11 @@ func (client *client) mapEventsGZip(events []publisher.Event) []batch {
 				records = append([]*kinesis.PutRecordsRequestEntry{record}, records...)
 			}
 		} else {
-			if toGZIPSize+size >= client.batchSizeBytes || toGZIPSize+size >= MAX_RECORD_SIZE {
-				gzippedBytes, err = client.getGZipFormatedBytes(toGZIPBytes)
-				if err != nil {
-					logp.Critical("Unable to gzip event: %v", err)
-					dropped += len(toGZIPBytes)
-					continue
-				}
+			if toGZIPSize+size >= client.batchSizeBytes || toGZIPSize+size >= MAX_RECORD_SIZE { // fill batch
 				toGZIPSize = size
-				toGZIPBytes = [][]byte{buf}
-				// fill batch
-				_, record, err := client.mapBytes(gzippedBytes, &event) // TODO: add +1 to size and remove size here and in mapBytes
+				gzippedBytes, record, err := client.getRecord(toGZIPBytes, event)
 				if err != nil {
-					logp.Debug("kinesis", "failed to map event from bytes(%v): %v", event, err)
+					logp.Critical("Unable get record: %v", err)
 					dropped += len(toGZIPBytes)
 					continue
 				}
@@ -335,6 +316,7 @@ func (client *client) mapEventsGZip(events []publisher.Event) []batch {
 					okEvents = append(okEvents, []publisher.Event{event})
 					records = append(records, record)
 				}
+				toGZIPBytes = [][]byte{buf}
 			} else { // fill the data to be gzipped
 				if len(okEvents) == 0 {
 					okEvents = [][]publisher.Event{{event}}
@@ -348,18 +330,9 @@ func (client *client) mapEventsGZip(events []publisher.Event) []batch {
 	}
 	// fill last batch
 	if len(toGZIPBytes) > 0 {
-		gzippedBytes, err := client.getGZipFormatedBytes(toGZIPBytes)
+		_, record, err := client.getRecord(toGZIPBytes, events[len(events)-1])
 		if err != nil {
-			logp.Critical("Unable to gzip event: %v", err)
-			dropped += len(toGZIPBytes)
-			return append(batches, batch{
-				okEvents: okEvents,
-				records:  records,
-				dropped:  dropped})
-		}
-		_, record, err := client.mapBytes(gzippedBytes, &events[len(events)-1]) // TODO: add +1 to size and remove size here and in mapBytes
-		if err != nil {
-			logp.Debug("kinesis", "failed to map event from bytes(%v): %v", events[len(events)-1], err)
+			logp.Critical("Unable to get record: %v", err)
 			dropped += len(toGZIPBytes)
 			return append(batches, batch{
 				okEvents: okEvents,
@@ -374,6 +347,23 @@ func (client *client) mapEventsGZip(events []publisher.Event) []batch {
 		records:  records,
 		dropped:  dropped})
 	return batches
+}
+
+func (client *client) getRecord(toGZIPBytes [][]byte, event publisher.Event) ([]byte, *kinesis.PutRecordsRequestEntry, error) {
+	gzippedBytes, err := client.getGZipFormatedBytes(toGZIPBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to gzip event: %v", err)
+	}
+	size := len(gzippedBytes)
+	if size >= client.batchSizeBytes || size >= MAX_RECORD_SIZE { // gzipped single record is bigger than batchSizeBytes or bigger than kinesis max record size
+		return nil, nil, fmt.Errorf("kinesis single record of size:%d  was gzipped to size %d is bigger than batchSizeBytes %d or bigger than kinesis max record size %d, sending batch without it! no backoff",
+			len(toGZIPBytes), size, client.batchSizeBytes, MAX_RECORD_SIZE)
+	}
+	record, err := client.mapBytes(gzippedBytes, &event)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to map event from bytes(%v): %v", event, err)
+	}
+	return gzippedBytes, record, nil
 }
 
 func (client *client) getBytesFromEvent(event *publisher.Event) ([]byte, error) {
@@ -417,7 +407,7 @@ func (client *client) getGZipFormatedBytes(eventsBytes [][]byte) ([]byte, error)
 	return gzipDataFormated, nil
 }
 
-func (client *client) mapBytes(buf []byte, event *publisher.Event) (int, *kinesis.PutRecordsRequestEntry, error) {
+func (client *client) mapBytes(buf []byte, event *publisher.Event) (*kinesis.PutRecordsRequestEntry, error) {
 	var bufCP []byte
 	{
 		// See https://github.com/elastic/beats/blob/5a6630a8bc9b9caf312978f57d1d9193bdab1ac7/libbeat/outputs/kafka/client.go#L163-L164
@@ -434,10 +424,10 @@ func (client *client) mapBytes(buf []byte, event *publisher.Event) (int, *kinesi
 	}
 	partitionKey, err := client.partitionKeyProvider.PartitionKeyFor(event)
 	if err != nil {
-		return 0, nil, fmt.Errorf("failed to get parititon key: %v", err)
+		return nil, fmt.Errorf("failed to get parititon key: %v", err)
 	}
 
-	return len(buf), &kinesis.PutRecordsRequestEntry{Data: bufCP, PartitionKey: aws.String(partitionKey)}, nil
+	return &kinesis.PutRecordsRequestEntry{Data: bufCP, PartitionKey: aws.String(partitionKey)}, nil
 }
 
 func (client *client) putKinesisRecords(records []*kinesis.PutRecordsRequestEntry) (*kinesis.PutRecordsOutput, error) {
