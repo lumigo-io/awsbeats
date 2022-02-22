@@ -20,6 +20,7 @@ output:
     partition_key_provider: xid
     batch_size: 500
     max_retries: 20
+    gzip: true
     batch_size_bytes: 5000000
     backoff:
       min: 1

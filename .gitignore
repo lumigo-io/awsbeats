@@ -24,3 +24,7 @@ example/firehose/log/*
 *.sw[a-p]
 
 .ropeproject
+foo.log
+go.mod
+go.sum
+
