@@ -677,16 +677,3 @@ func TestClient_String(t *testing.T) {
 		t.Errorf("unexpected value '%v'", v)
 	}
 }
-
-// func testCollectFailedEvents(t *testing.T) {
-// 	events []publisher.Event = []publisher.Event{
-// 	failedEvents := collectFailedEvents(events)
-// 	if len(failedEvents) != len(expectedFailedEvents) {
-// 		t.Errorf("unexpected number of failed events: %d", len(failedEvents))
-// 	}
-// 	for i, ev := range failedEvents {
-// 		if !cmp.Equal(ev, expectedFailedEvents[i]) {
-// 			t.Errorf("unexpected failed event: %v", ev)
-// 		}
-// 	}
-// }
