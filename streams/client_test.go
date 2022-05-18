@@ -618,10 +618,10 @@ func getStringFromKinesisStab(s *StubClient, is_gzip bool, t *testing.T) string 
 			if err != nil {
 				t.Errorf("unable to read gzipped data error: %v", err)
 			}
-			var midBuf bytes.Buffer
-			io.Copy(&midBuf, zr)
+			var zipBuf bytes.Buffer
+			io.Copy(&zipBuf, zr)
 			zr.Close()
-			midStr := midBuf.String()
+			midStr := zipBuf.String()
 			buf.WriteString(midStr)
 			buf.WriteString("\n")
 		}
