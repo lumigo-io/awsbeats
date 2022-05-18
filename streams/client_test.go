@@ -214,13 +214,13 @@ func TestPublishEvents(t *testing.T) {
 	}
 	event := publisher.Event{Content: beat.Event{Fields: common.MapStr{fieldForPartitionKey: expectedPartitionKey}}}
 	testcases := []struct {
-		testname        string
-		putRecordsOut   []*kinesis.PutRecordsOutput
-		putRecordsErr   []error
-		codecData       [][]byte
-		codecErr        []error
-		eventsToPublish []publisher.Event
-		remainingEvents int
+		testname                string
+		putRecordsOut           []*kinesis.PutRecordsOutput
+		mockPutRecordsErr       []error
+		mockCodecData           [][]byte
+		mockCodecErr            []error
+		mockEventsToPublish     []publisher.Event
+		expectedRemainingEvents int
 	}{
 		{
 			testname: "success",
@@ -234,11 +234,11 @@ func TestPublishEvents(t *testing.T) {
 					FailedRecordCount: aws.Int64(0),
 				},
 			},
-			putRecordsErr:   []error{nil},
-			codecData:       [][]byte{[]byte("boom")},
-			codecErr:        []error{nil},
-			eventsToPublish: []publisher.Event{event},
-			remainingEvents: 0,
+			mockPutRecordsErr:       []error{nil},
+			mockCodecData:           [][]byte{[]byte("boom")},
+			mockCodecErr:            []error{nil},
+			mockEventsToPublish:     []publisher.Event{event},
+			expectedRemainingEvents: 0,
 		},
 		{ // An event that can't be encoded should be ignored without any error, but with some log.
 			testname: "unable to encode",
@@ -252,11 +252,11 @@ func TestPublishEvents(t *testing.T) {
 					FailedRecordCount: aws.Int64(0),
 				},
 			},
-			putRecordsErr:   []error{nil},
-			codecData:       [][]byte{[]byte("")},
-			codecErr:        []error{fmt.Errorf("failed to encode")},
-			eventsToPublish: []publisher.Event{event},
-			remainingEvents: 0,
+			mockPutRecordsErr:       []error{nil},
+			mockCodecData:           [][]byte{[]byte("")},
+			mockCodecErr:            []error{fmt.Errorf("failed to encode")},
+			mockEventsToPublish:     []publisher.Event{event},
+			expectedRemainingEvents: 0,
 		},
 		{ // Nil records returned by Kinesis should be ignored with some log
 			testname: "nil records returned by Kinesis",
@@ -266,11 +266,11 @@ func TestPublishEvents(t *testing.T) {
 					FailedRecordCount: aws.Int64(1),
 				},
 			},
-			putRecordsErr:   []error{nil},
-			codecData:       [][]byte{[]byte("boom")},
-			codecErr:        []error{nil},
-			eventsToPublish: []publisher.Event{event},
-			remainingEvents: 0,
+			mockPutRecordsErr:       []error{nil},
+			mockCodecData:           [][]byte{[]byte("boom")},
+			mockCodecErr:            []error{nil},
+			mockEventsToPublish:     []publisher.Event{event},
+			expectedRemainingEvents: 0,
 		},
 		{ // Records with nil error codes should be ignored with some log
 			testname: "nil error codes",
@@ -282,11 +282,11 @@ func TestPublishEvents(t *testing.T) {
 					FailedRecordCount: aws.Int64(1),
 				},
 			},
-			putRecordsErr:   []error{nil},
-			codecData:       [][]byte{[]byte("boom")},
-			codecErr:        []error{nil},
-			eventsToPublish: []publisher.Event{event},
-			remainingEvents: 0,
+			mockPutRecordsErr:       []error{nil},
+			mockCodecData:           [][]byte{[]byte("boom")},
+			mockCodecErr:            []error{nil},
+			mockEventsToPublish:     []publisher.Event{event},
+			expectedRemainingEvents: 0,
 		},
 		{ // Kinesis received the event but it was not persisted, probably due to underlying infrastructure failure
 			testname: "event not persisted",
@@ -300,11 +300,11 @@ func TestPublishEvents(t *testing.T) {
 					FailedRecordCount: aws.Int64(1),
 				},
 			},
-			putRecordsErr:   []error{nil},
-			codecData:       [][]byte{[]byte("boom")},
-			codecErr:        []error{nil},
-			eventsToPublish: []publisher.Event{event},
-			remainingEvents: 1,
+			mockPutRecordsErr:       []error{nil},
+			mockCodecData:           [][]byte{[]byte("boom")},
+			mockCodecErr:            []error{nil},
+			mockEventsToPublish:     []publisher.Event{event},
+			expectedRemainingEvents: 1,
 		},
 		{ // Kinesis received the event but it was not persisted, due to throughput exceeded error
 			testname: "throughput exceeded",
@@ -318,23 +318,23 @@ func TestPublishEvents(t *testing.T) {
 					FailedRecordCount: aws.Int64(1),
 				},
 			},
-			putRecordsErr:   []error{nil},
-			codecData:       [][]byte{[]byte("boom")},
-			codecErr:        []error{nil},
-			eventsToPublish: []publisher.Event{event},
-			remainingEvents: 1,
+			mockPutRecordsErr:       []error{nil},
+			mockCodecData:           [][]byte{[]byte("boom")},
+			mockCodecErr:            []error{nil},
+			mockEventsToPublish:     []publisher.Event{event},
+			expectedRemainingEvents: 1,
 		},
 	}
 	for _, tc := range testcases {
 		t.Run(tc.testname, func(t *testing.T) {
-			client.encoder = &StubCodec{dat: tc.codecData, err: tc.codecErr}
-			client.streams = &StubClient{out: tc.putRecordsOut, err: tc.putRecordsErr}
-			rest, err := client.publishEvents(tc.eventsToPublish)
+			client.encoder = &StubCodec{dat: tc.mockCodecData, err: tc.mockCodecErr}
+			client.streams = &StubClient{out: tc.putRecordsOut, err: tc.mockPutRecordsErr}
+			rest, err := client.publishEvents(tc.mockEventsToPublish)
 			if err != nil {
 				t.Errorf("unexpected error: %+v", err)
 			}
-			if len(rest) != tc.remainingEvents {
-				t.Errorf("unexpected number of remaining events got:%d want:%d", len(rest), tc.remainingEvents)
+			if len(rest) != tc.expectedRemainingEvents {
+				t.Errorf("unexpected number of remaining events got:%d want:%d", len(rest), tc.expectedRemainingEvents)
 			}
 		})
 	}
