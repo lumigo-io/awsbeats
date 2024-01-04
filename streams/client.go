@@ -83,6 +83,7 @@ func (client *client) Connect() error {
 }
 
 func (client *client) Publish(batch publisher.Batch) error {
+	logp.Info("We are at publish function!!!")
 	events := batch.Events()
 	rest, _ := client.publishEvents(events)
 	if len(rest) == 0 {
